@@ -1,0 +1,20 @@
+[
+  { "name": "Stripe", "ats": "greenhouse", "slug": "stripe" },
+  { "name": "Figma", "ats": "greenhouse", "slug": "figma" },
+  { "name": "Notion", "ats": "ashby", "slug": "notion" },
+  { "name": "Vercel", "ats": "greenhouse", "slug": "vercel" },
+  { "name": "Databricks", "ats": "greenhouse", "slug": "databricks" },
+  { "name": "dbt Labs", "ats": "greenhouse", "slug": "dbtlabsinc" },
+  { "name": "Datadog", "ats": "greenhouse", "slug": "datadog" },
+  { "name": "Amplitude", "ats": "greenhouse", "slug": "amplitude" },
+  { "name": "Mixpanel", "ats": "greenhouse", "slug": "mixpanel" },
+  { "name": "Airbnb", "ats": "greenhouse", "slug": "airbnb" },
+  { "name": "Instacart", "ats": "greenhouse", "slug": "instacart" },
+  { "name": "Cloudflare", "ats": "greenhouse", "slug": "cloudflare" },
+  { "name": "Twilio", "ats": "greenhouse", "slug": "twilio" },
+  { "name": "Reddit", "ats": "greenhouse", "slug": "reddit" },
+  { "name": "Pinterest", "ats": "greenhouse", "slug": "pinterestjobadvertisements" },
+  { "name": "Maven Clinic", "ats": "greenhouse", "slug": "mavenclinic" },
+  { "name": "ONE Imaging", "ats": "greenhouse", "slug": "oneimaging" },
+  { "name": "DV01", "ats": "greenhouse", "slug": "dv01" }
+]
