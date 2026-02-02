@@ -1,3 +1,4 @@
+import fs from "fs";
 import path from "path";
 import { AutomationPage } from "../automation/session";
 import { ResumeAsset, UserProfile } from "../types/context";
@@ -145,8 +146,36 @@ export class GreenhouseFormEngine implements FormEngine {
           skipped.push({ field: "captcha", reason: "captcha", hint });
           continue;
         }
-        if (hintText.includes("resume_text") || hintText.includes("cover_letter_text")) {
-          skipped.push({ field: "longform", reason: "not-supported", hint });
+        if (hintText.includes("resume_text") || hintText.includes("cover_letter_text") || element.tagName.toLowerCase() === "textarea") {
+          const pickLongform = (rawHint: string): string => {
+            const hintLower = normalize(rawHint);
+            if (!data.answers) {
+              return "";
+            }
+            if (hintLower.includes("cover letter")) {
+              return data.answers.coverLetter || data.answers.cover_letter || "";
+            }
+            if (hintLower.includes("why") || hintLower.includes("interested") || hintLower.includes("motivat")) {
+              return data.answers.whyCompany || data.answers.why_company || "";
+            }
+            if (hintLower.includes("role") || hintLower.includes("position")) {
+              return data.answers.whyRole || data.answers.why_role || "";
+            }
+            if (hintLower.includes("additional") || hintLower.includes("anything else")) {
+              return data.answers.additionalInfo || data.answers.additional_info || "";
+            }
+            return data.answers.longformDefault || "";
+          };
+
+          const longform = pickLongform(hint);
+          if (longform && element.tagName.toLowerCase() !== "select") {
+            (element as HTMLInputElement).value = String(longform);
+            element.dispatchEvent(new Event("input", { bubbles: true }));
+            element.dispatchEvent(new Event("change", { bubbles: true }));
+            filled.push({ field: "longform", reason: "answer" });
+          } else {
+            skipped.push({ field: "longform", reason: "missing-answer", hint });
+          }
           continue;
         }
 
@@ -357,6 +386,21 @@ export class GreenhouseFormEngine implements FormEngine {
       });
     });
 
+    const missing = result.skipped.filter((entry) =>
+      ["no data", "missing-answer", "low confidence", "not-supported"].includes(entry.reason ?? "")
+    );
+    if (missing.length > 0) {
+      this.recordMissingFields(meta, missing);
+      meta.runLogger.logEvent({
+        runId: meta.runId,
+        listingId: meta.listingId,
+        applyType: meta.applyType,
+        step: "missing-fields",
+        reason: `${missing.length} missing fields`,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     await this.captureStep(page, meta, "after-fill");
     if (!result.fileInputFound) {
       this.logger.warn("No resume file input found in apply form.");
@@ -517,6 +561,27 @@ export class GreenhouseFormEngine implements FormEngine {
     return { state, reason, submitPolicy: policy.outcome, submitPolicyReason: policy.reason, screenshotPath };
   }
 
+  private recordMissingFields(meta: FormMeta, missing: Array<{ field: string; reason?: string; hint?: string }>): void {
+    if (!meta.dataDir) {
+      return;
+    }
+    const filePath = path.join(meta.dataDir, "missing_fields.json");
+    const payload = {
+      runId: meta.runId,
+      listingId: meta.listingId,
+      applyType: meta.applyType,
+      timestamp: new Date().toISOString(),
+      missing,
+    };
+    try {
+      const existing = fs.existsSync(filePath) ? JSON.parse(fs.readFileSync(filePath, "utf8")) : [];
+      const next = Array.isArray(existing) ? existing.concat(payload) : [payload];
+      fs.writeFileSync(filePath, JSON.stringify(next, null, 2));
+    } catch (error) {
+      this.logger.warn("Failed to persist missing fields.");
+    }
+  }
+
   private async uploadResume(page: AutomationPage, resume: ResumeAsset, meta: FormMeta): Promise<void> {
     const selector = await page.evaluate(() => {
       const input = document.querySelector("input[type=file][data-autoapply-file=\"resume\"]") as HTMLInputElement | null;
@@ -571,7 +636,7 @@ async function waitForEnter(): Promise<void> {
   });
 }
 
-function mapProfile(profile: UserProfile): Record<string, string> {
+function mapProfile(profile: UserProfile): Record<string, unknown> {
   const nameParts = (profile.fullName || "").trim().split(/\s+/);
   const firstName = nameParts[0] || "";
   const lastName = nameParts.length > 1 ? nameParts.slice(1).join(" ") : "";
@@ -595,6 +660,7 @@ function mapProfile(profile: UserProfile): Record<string, string> {
     raceEthnicity: profile.eeo?.raceEthnicity || "",
     veteranStatus: profile.eeo?.veteranStatus || "",
     disabilityStatus: profile.eeo?.disabilityStatus || "",
+    answers: profile.answers || {},
   };
 }
 

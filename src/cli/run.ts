@@ -9,10 +9,11 @@ import { createConnectorRegistry } from "../connectors";
 import { createPlaywrightSession } from "../automation";
 import { GreenhouseFormEngine, IndeedFormEngine } from "../forms";
 import { createLogger, createRunLogger } from "../logging";
-import { InMemoryJobRepo } from "../storage/repositories";
+import { FileJobRepo, InMemoryJobRepo } from "../storage/repositories";
 import { FileJobStore } from "../storage/jobStore";
 import { SimpleOrchestrator } from "../core/orchestrator";
 import { ResumeAsset } from "../types/context";
+import { JobRecord } from "../types/jobs";
 import { discoverJobs } from "../discovery";
 import { filterJobs } from "../discovery/filterJobs";
 import { runGreenhouseDryRun, runGreenhouseDryRunForJobs } from "../core/greenhouseApply";
@@ -204,6 +205,17 @@ async function handleProfile(args: string[]): Promise<void> {
     eeo.disabilityStatus = disabilityStatus;
   }
 
+  const answers = { ...(profile.answers ?? {}) } as Record<string, string>;
+  const answerEntries = readMultiFlag(args, "--answer");
+  for (const entry of answerEntries) {
+    const [key, ...rest] = entry.split("=");
+    if (!key || rest.length === 0) {
+      continue;
+    }
+    answers[key.trim()] = rest.join("=").trim();
+  }
+  profile.answers = Object.keys(answers).length > 0 ? answers : undefined;
+
   profile.eeo = Object.keys(eeo).length > 0 ? eeo : undefined;
   saveConfig({ ...config, profile });
   process.stdout.write("Profile updated.\n");
@@ -386,6 +398,15 @@ async function handleApply(args: string[]): Promise<void> {
   const keepOpen = hasFlag(args, "--keep-open");
   const pauseOnVerification = hasFlag(args, "--pause-on-verification");
   const overrideUrl = readFlag(args, "--url");
+  const submit = hasFlag(args, "--submit");
+  const confirmSubmit = hasFlag(args, "--confirm");
+  const discover = hasFlag(args, "--discover");
+  const registryPath = readFlag(args, "--registry") ?? path.join(process.cwd(), "companies.json");
+
+  if (submit && !confirmSubmit) {
+    process.stderr.write("Refusing to submit without --confirm.\n");
+    return;
+  }
 
   const resume = selectResume(config.resumes);
   if (!resume) {
@@ -413,19 +434,20 @@ async function handleApply(args: string[]): Promise<void> {
     runId,
     startedAt: new Date().toISOString(),
     board: "greenhouse",
-    dryRun: true,
+    dryRun: !submit,
     maxApplications: limit,
   });
 
   const logger = createLogger("greenhouse-form");
   const formEngine = new GreenhouseFormEngine(logger);
+  const jobRepo = new FileJobRepo(config.app.dataDir);
 
   try {
     const ctx = {
       profile: config.profile,
       resume,
       preferences: config.preferences,
-      dryRun: true,
+      dryRun: !submit,
       maxApplications: limit,
       automation,
       formEngine,
@@ -437,19 +459,33 @@ async function handleApply(args: string[]): Promise<void> {
       pauseOnVerification,
     };
 
-    const summary = overrideUrl
-      ? await runGreenhouseDryRunForJobs(ctx, [
-          {
-            id: extractGreenhouseJobId(overrideUrl) ?? "manual",
-            company: extractGreenhouseSlug(overrideUrl) ?? "manual",
-            title: "Manual Greenhouse Job",
-            location: "",
-            ats: "greenhouse",
-            applyUrl: overrideUrl,
-            companySlug: extractGreenhouseSlug(overrideUrl) ?? undefined,
-          },
-        ])
-      : await runGreenhouseDryRun(ctx, { limit });
+    let jobs: JobRecord[] | null = null;
+
+    if (overrideUrl) {
+      jobs = [
+        {
+          id: extractGreenhouseJobId(overrideUrl) ?? "manual",
+          company: extractGreenhouseSlug(overrideUrl) ?? "manual",
+          title: "Manual Greenhouse Job",
+          location: "",
+          ats: "greenhouse",
+          applyUrl: overrideUrl,
+          companySlug: extractGreenhouseSlug(overrideUrl) ?? undefined,
+        },
+      ];
+    } else if (discover) {
+      const discovery = await discoverJobs(registryPath);
+      const store = new FileJobStore(config.app.dataDir, "jobs.json");
+      await store.upsertMany(discovery.jobs);
+      const filterResult = filterJobs(discovery.jobs, config.preferences);
+      const filteredStore = new FileJobStore(config.app.dataDir, "filtered_jobs.json");
+      await filteredStore.writeAll(filterResult.matched);
+      jobs = filterResult.matched.filter((job) => job.ats === "greenhouse").slice(0, limit);
+    }
+
+    const summary = jobs
+      ? await runGreenhouseDryRunForJobs(ctx, jobs, jobRepo)
+      : await runGreenhouseDryRun(ctx, { limit, jobRepo });
 
     const counts = summary.results.reduce(
       (acc, result) => {
@@ -459,7 +495,7 @@ async function handleApply(args: string[]): Promise<void> {
       {} as Record<string, number>
     );
 
-    process.stdout.write(`Greenhouse dry-run attempted: ${summary.attempted}\n`);
+    process.stdout.write(`Greenhouse run attempted: ${summary.attempted} (dryRun=${!submit})\n`);
     for (const [status, count] of Object.entries(counts)) {
       process.stdout.write(`  ${status}: ${count}\n`);
     }

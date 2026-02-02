@@ -39,6 +39,7 @@ export function defaultConfig(): AppConfig {
       fullName: "",
       email: "",
       phone: "",
+      answers: {},
     },
     resumes: [],
     preferences: {

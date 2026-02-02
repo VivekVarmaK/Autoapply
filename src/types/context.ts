@@ -23,6 +23,7 @@ export interface UserProfile {
     veteranStatus?: string;
     disabilityStatus?: string;
   };
+  answers?: Record<string, string>;
 }
 
 export interface ResumeAsset {

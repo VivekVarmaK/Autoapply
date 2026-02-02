@@ -3,9 +3,11 @@ import { FileJobStore } from "../storage/jobStore";
 import { JobRecord } from "../types/jobs";
 import { ApplyResult } from "../types/boards";
 import { ApplyContext } from "../types/context";
+import { JobRepo } from "../storage/repositories";
 
 export interface GreenhouseApplyOptions {
   limit: number;
+  jobRepo?: JobRepo;
 }
 
 export interface GreenhouseApplySummary {
@@ -23,7 +25,7 @@ export async function runGreenhouseDryRun(
   const results: ApplyResult[] = [];
 
   for (const job of jobs) {
-    const result = await applyGreenhouseJob(job, ctx);
+    const result = await applyGreenhouseJob(job, ctx, options.jobRepo);
     results.push(result);
   }
 
@@ -32,17 +34,35 @@ export async function runGreenhouseDryRun(
 
 export async function runGreenhouseDryRunForJobs(
   ctx: ApplyContext,
-  jobs: JobRecord[]
+  jobs: JobRecord[],
+  jobRepo?: JobRepo
 ): Promise<GreenhouseApplySummary> {
   const results: ApplyResult[] = [];
   for (const job of jobs) {
-    const result = await applyGreenhouseJob(job, ctx);
+    const result = await applyGreenhouseJob(job, ctx, jobRepo);
     results.push(result);
   }
   return { attempted: jobs.length, results };
 }
 
-async function applyGreenhouseJob(job: JobRecord, ctx: ApplyContext): Promise<ApplyResult> {
+async function applyGreenhouseJob(job: JobRecord, ctx: ApplyContext, jobRepo?: JobRepo): Promise<ApplyResult> {
+  const repoListing = {
+    id: job.id,
+    board: "greenhouse",
+    url: job.applyUrl,
+    title: job.title,
+    company: job.company,
+    location: job.location,
+  };
+
+  if (jobRepo && (await jobRepo.hasApplied(job.applyUrl))) {
+    return {
+      listingId: job.id,
+      status: "skipped",
+      message: "Already applied (persisted)",
+    };
+  }
+
   const page = await ctx.automation.newPage();
   let activePage: any = page;
   let extraPage: any = null;
@@ -189,6 +209,7 @@ async function applyGreenhouseJob(job: JobRecord, ctx: ApplyContext): Promise<Ap
       listingId: job.id,
       applyType: "greenhouse",
       logDir: ctx.logDir,
+      dataDir: ctx.dataDir,
       runLogger: ctx.runLogger,
       setLastScreenshot: (pathValue: string) => {
         ctx.lastScreenshotPath = pathValue;
@@ -199,6 +220,24 @@ async function applyGreenhouseJob(job: JobRecord, ctx: ApplyContext): Promise<Ap
     await ctx.formEngine.mapAndFill(activePage, ctx.profile, ctx.resume, meta);
     await ctx.formEngine.answerScreening(activePage, ctx.profile, meta);
     const submitDetection = await ctx.formEngine.detectSubmitState(activePage, meta);
+
+    if (!ctx.dryRun && submitDetection.submitPolicy === "pass" && submitDetection.state === "ready-to-submit") {
+      const submitResult = await submitGreenhouseApplication(activePage, ctx, job.id);
+      ctx.runLogger.logEvent({
+        runId: ctx.runId,
+        listingId: job.id,
+        applyType: "greenhouse",
+        step: "result",
+        status: submitResult.status,
+        reason: submitResult.message,
+        timestamp: new Date().toISOString(),
+        screenshotPath: submitResult.artifacts?.screenshotPath ?? ctx.lastScreenshotPath,
+      });
+      if (jobRepo) {
+        await jobRepo.markApplied(repoListing as any, submitResult);
+      }
+      return submitResult;
+    }
 
     ctx.runLogger.logEvent({
       runId: ctx.runId,
@@ -211,14 +250,18 @@ async function applyGreenhouseJob(job: JobRecord, ctx: ApplyContext): Promise<Ap
       screenshotPath: submitDetection.screenshotPath ?? ctx.lastScreenshotPath,
     });
 
-    return {
+    const dryRunResult = {
       listingId: job.id,
-      status: "dry-run",
+      status: "dry-run" as const,
       message: `Dry-run: ${submitDetection.state} (${submitDetection.reason})`,
       artifacts: {
         screenshotPath: submitDetection.screenshotPath ?? ctx.lastScreenshotPath,
       },
     };
+    if (jobRepo) {
+      await jobRepo.markApplied(repoListing as any, dryRunResult);
+    }
+    return dryRunResult;
   } catch (error) {
     const screenshotPath = await captureScreenshot(activePage, ctx, job.id, "apply-error");
     ctx.runLogger.logEvent({
@@ -247,6 +290,56 @@ async function applyGreenhouseJob(job: JobRecord, ctx: ApplyContext): Promise<Ap
       await activePage.close().catch(() => undefined);
     }
   }
+}
+
+async function submitGreenhouseApplication(
+  page: any,
+  ctx: ApplyContext,
+  listingId: string
+): Promise<ApplyResult> {
+  const selector = await page.evaluate(() => {
+    const getText = (el: Element) => el.textContent?.trim().toLowerCase() || "";
+    const buttons = Array.from(document.querySelectorAll("button, [role=\"button\"], input[type=\"submit\"]"));
+    const submit = buttons.find((el) => {
+      const text = getText(el);
+      const aria = (el as HTMLElement).getAttribute("aria-label")?.toLowerCase() || "";
+      return text.includes("submit") || text.includes("apply now") || text.includes("finish") || aria.includes("submit");
+    }) as HTMLElement | undefined;
+    if (!submit) {
+      return null;
+    }
+    submit.setAttribute("data-autoapply-submit", "true");
+    return "[data-autoapply-submit=\"true\"]";
+  });
+
+  if (!selector) {
+    const screenshotPath = await captureScreenshot(page, ctx, listingId, "submit-missing");
+    return {
+      listingId,
+      status: "failed",
+      message: "Submit button not found",
+      artifacts: { screenshotPath },
+    };
+  }
+
+  await page.click(selector);
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  const screenshotPath = await captureScreenshot(page, ctx, listingId, "submitted");
+  ctx.runLogger.logEvent({
+    runId: ctx.runId,
+    listingId,
+    applyType: "greenhouse",
+    step: "submit-click",
+    timestamp: new Date().toISOString(),
+    screenshotPath,
+  });
+
+  return {
+    listingId,
+    status: "submitted",
+    message: "Submitted",
+    artifacts: { screenshotPath },
+  };
 }
 
 async function evaluateApplyTarget(

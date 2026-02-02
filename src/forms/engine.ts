@@ -9,6 +9,7 @@ export interface FormMeta {
   logDir: string;
   runLogger: RunLogger;
   setLastScreenshot: (path: string) => void;
+  dataDir?: string;
   pauseOnVerification?: boolean;
 }
 

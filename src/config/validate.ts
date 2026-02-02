@@ -121,6 +121,17 @@ export function validateConfig(raw: unknown): AppConfig {
     profile.eeo.lgbtq = "";
   }
 
+  if (profile.answers && typeof profile.answers !== "object") {
+    profile.answers = {};
+  }
+  if (profile.answers) {
+    for (const [key, value] of Object.entries(profile.answers)) {
+      if (typeof value !== "string") {
+        delete profile.answers[key];
+      }
+    }
+  }
+
   const resumes = Array.isArray(config.resumes) ? config.resumes.filter(isResumeAsset) : [];
 
   const preferences: SearchCriteria = {
