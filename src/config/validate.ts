@@ -36,6 +36,10 @@ export function validateConfig(raw: unknown): AppConfig {
   const app = {
     ...base.app,
     ...config.app,
+    llm: {
+      ...base.app.llm,
+      ...(config.app?.llm ?? {}),
+    },
   };
 
   if (typeof app.dataDir !== "string" || app.dataDir.length === 0) {
@@ -66,6 +70,22 @@ export function validateConfig(raw: unknown): AppConfig {
 
   if (typeof app.maxApplicationsPerRun !== "number" || Number.isNaN(app.maxApplicationsPerRun)) {
     app.maxApplicationsPerRun = base.app.maxApplicationsPerRun;
+  }
+
+  if (typeof app.llm?.provider !== "string") {
+    app.llm.provider = base.app.llm.provider;
+  }
+  if (typeof app.llm?.model !== "string") {
+    app.llm.model = base.app.llm.model;
+  }
+  if (typeof app.llm?.maxCostPerAnswerUsd !== "number" || Number.isNaN(app.llm.maxCostPerAnswerUsd)) {
+    app.llm.maxCostPerAnswerUsd = base.app.llm.maxCostPerAnswerUsd;
+  }
+  if (typeof app.llm?.maxOutputTokens !== "number" || Number.isNaN(app.llm.maxOutputTokens)) {
+    app.llm.maxOutputTokens = base.app.llm.maxOutputTokens;
+  }
+  if (typeof app.llm?.enabled !== "boolean") {
+    app.llm.enabled = base.app.llm.enabled;
   }
 
   const profile: UserProfile = {
@@ -112,6 +132,12 @@ export function validateConfig(raw: unknown): AppConfig {
   }
   if (profile.github && typeof profile.github !== "string") {
     profile.github = "";
+  }
+  if (profile.summary && typeof profile.summary !== "string") {
+    profile.summary = "";
+  }
+  if (profile.skills && !Array.isArray(profile.skills)) {
+    profile.skills = [];
   }
 
   if (profile.eeo && typeof profile.eeo !== "object") {

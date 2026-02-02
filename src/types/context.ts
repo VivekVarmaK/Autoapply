@@ -24,6 +24,16 @@ export interface UserProfile {
     disabilityStatus?: string;
   };
   answers?: Record<string, string>;
+  summary?: string;
+  skills?: string[];
+}
+
+export interface LlmConfig {
+  provider: "openai";
+  model: string;
+  maxCostPerAnswerUsd: number;
+  maxOutputTokens: number;
+  enabled: boolean;
 }
 
 export interface ResumeAsset {
@@ -49,4 +59,6 @@ export interface ApplyContext {
   lastApplyType?: string;
   keepOpen?: boolean;
   pauseOnVerification?: boolean;
+  llm?: LlmConfig;
+  persistAnswer?: (key: string, value: string) => void;
 }

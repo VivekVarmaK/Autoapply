@@ -20,9 +20,10 @@ export class GreenhouseFormEngine implements FormEngine {
     await this.captureStep(page, meta, "before-fill");
 
     const result = await page.evaluate((data) => {
-      type FieldFill = { field: string; reason?: string; hint?: string };
+      type FieldFill = { field: string; reason?: string; hint?: string; selector?: string };
       const filled: FieldFill[] = [];
       const skipped: FieldFill[] = [];
+      const longform: FieldFill[] = [];
       let fileInputFound = false;
       let captchaDetected = false;
 
@@ -147,35 +148,9 @@ export class GreenhouseFormEngine implements FormEngine {
           continue;
         }
         if (hintText.includes("resume_text") || hintText.includes("cover_letter_text") || element.tagName.toLowerCase() === "textarea") {
-          const pickLongform = (rawHint: string): string => {
-            const hintLower = normalize(rawHint);
-            if (!data.answers) {
-              return "";
-            }
-            if (hintLower.includes("cover letter")) {
-              return data.answers.coverLetter || data.answers.cover_letter || "";
-            }
-            if (hintLower.includes("why") || hintLower.includes("interested") || hintLower.includes("motivat")) {
-              return data.answers.whyCompany || data.answers.why_company || "";
-            }
-            if (hintLower.includes("role") || hintLower.includes("position")) {
-              return data.answers.whyRole || data.answers.why_role || "";
-            }
-            if (hintLower.includes("additional") || hintLower.includes("anything else")) {
-              return data.answers.additionalInfo || data.answers.additional_info || "";
-            }
-            return data.answers.longformDefault || "";
-          };
-
-          const longform = pickLongform(hint);
-          if (longform && element.tagName.toLowerCase() !== "select") {
-            (element as HTMLInputElement).value = String(longform);
-            element.dispatchEvent(new Event("input", { bubbles: true }));
-            element.dispatchEvent(new Event("change", { bubbles: true }));
-            filled.push({ field: "longform", reason: "answer" });
-          } else {
-            skipped.push({ field: "longform", reason: "missing-answer", hint });
-          }
+          const marker = `autoapply-longform-${Math.random().toString(36).slice(2)}`;
+          element.setAttribute("data-autoapply-longform", marker);
+          longform.push({ field: "longform", reason: "needs-answer", hint, selector: `[data-autoapply-longform='${marker}']` });
           continue;
         }
 
@@ -350,20 +325,24 @@ export class GreenhouseFormEngine implements FormEngine {
         filled.push({ field });
       }
 
-      return { filled, skipped, fileInputFound, captchaDetected };
+      return { filled, skipped, longform, fileInputFound, captchaDetected };
     }, mapProfile(profile));
 
-    const reasonCounts = result.skipped.reduce<Record<string, number>>((acc, entry) => {
+    const longformResults = await this.fillLongform(page, result.longform, profile, meta);
+    const allFilled = result.filled.concat(longformResults.filled);
+    const allSkipped = result.skipped.concat(longformResults.skipped);
+
+    const reasonCounts = allSkipped.reduce<Record<string, number>>((acc, entry) => {
       const reason = entry.reason ?? "unknown";
       acc[reason] = (acc[reason] ?? 0) + 1;
       return acc;
     }, {});
 
-    this.logger.info(`Filled fields: ${result.filled.length}. Skipped: ${result.skipped.length}.`);
+    this.logger.info(`Filled fields: ${allFilled.length}. Skipped: ${allSkipped.length}.`);
     if (result.skipped.length > 0) {
       this.logger.warn(`Skip reasons: ${JSON.stringify(reasonCounts)}`);
     }
-    result.filled.forEach((entry) => {
+    allFilled.forEach((entry) => {
       meta.runLogger.logEvent({
         runId: meta.runId,
         listingId: meta.listingId,
@@ -373,7 +352,7 @@ export class GreenhouseFormEngine implements FormEngine {
         timestamp: new Date().toISOString(),
       });
     });
-    result.skipped.forEach((entry) => {
+    allSkipped.forEach((entry) => {
       meta.runLogger.logEvent({
         runId: meta.runId,
         listingId: meta.listingId,
@@ -386,8 +365,10 @@ export class GreenhouseFormEngine implements FormEngine {
       });
     });
 
-    const missing = result.skipped.filter((entry) =>
-      ["no data", "missing-answer", "low confidence", "not-supported"].includes(entry.reason ?? "")
+    const missing = allSkipped.filter((entry) =>
+      ["no data", "missing-answer", "low confidence", "not-supported", "needs-answer"].includes(
+        entry.reason ?? ""
+      )
     );
     if (missing.length > 0) {
       this.recordMissingFields(meta, missing);
@@ -582,6 +563,53 @@ export class GreenhouseFormEngine implements FormEngine {
     }
   }
 
+  private async fillLongform(
+    page: AutomationPage,
+    entries: Array<{ field: string; reason?: string; hint?: string; selector?: string }>,
+    profile: UserProfile,
+    meta: FormMeta
+  ): Promise<{ filled: Array<{ field: string; reason?: string }>; skipped: Array<{ field: string; reason?: string; hint?: string }> }>
+  {
+    const filled: Array<{ field: string; reason?: string }> = [];
+    const skipped: Array<{ field: string; reason?: string; hint?: string }> = [];
+    if (!entries || entries.length === 0) {
+      return { filled, skipped };
+    }
+
+    for (const entry of entries) {
+      const selector = entry.selector;
+      if (!selector || !entry.hint) {
+        skipped.push({ field: "longform", reason: "missing-selector", hint: entry.hint });
+        continue;
+      }
+
+      const key = classifyLongformKey(entry.hint);
+      let answer = getAnswer(profile.answers ?? {}, key);
+      let reason = "answer";
+
+      if (!answer && meta.generateLongform) {
+        answer = await meta.generateLongform({ question: entry.hint, profile });
+        if (answer) {
+          reason = "generated";
+          if (meta.persistAnswer) {
+            meta.persistAnswer(key, answer);
+          }
+          profile.answers = { ...(profile.answers ?? {}), [key]: answer };
+        }
+      }
+
+      if (!answer) {
+        skipped.push({ field: "longform", reason: "missing-answer", hint: entry.hint });
+        continue;
+      }
+
+      await page.fill(selector, answer);
+      filled.push({ field: "longform", reason });
+    }
+
+    return { filled, skipped };
+  }
+
   private async uploadResume(page: AutomationPage, resume: ResumeAsset, meta: FormMeta): Promise<void> {
     const selector = await page.evaluate(() => {
       const input = document.querySelector("input[type=file][data-autoapply-file=\"resume\"]") as HTMLInputElement | null;
@@ -692,4 +720,34 @@ function evaluateSubmitPolicy(detection: {
   }
 
   return { outcome: "pass", reason: "all submit guards passed" };
+}
+
+function classifyLongformKey(hint: string): string {
+  const text = hint.toLowerCase();
+  if (text.includes("cover letter")) {
+    return "coverLetter";
+  }
+  if (text.includes("why") || text.includes("interested") || text.includes("motivat")) {
+    return "whyCompany";
+  }
+  if (text.includes("role") || text.includes("position")) {
+    return "whyRole";
+  }
+  if (text.includes("additional") || text.includes("anything else")) {
+    return "additionalInfo";
+  }
+  return "longformDefault";
+}
+
+function getAnswer(answers: Record<string, string>, key: string): string {
+  const direct = answers[key];
+  if (direct) return direct;
+  const snake = key.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`);
+  if (answers[snake]) return answers[snake];
+  if (key === "coverLetter" && answers.cover_letter) return answers.cover_letter;
+  if (key === "whyCompany" && answers.why_company) return answers.why_company;
+  if (key === "whyRole" && answers.why_role) return answers.why_role;
+  if (key === "additionalInfo" && answers.additional_info) return answers.additional_info;
+  if (key === "longformDefault" && answers.longform_default) return answers.longform_default;
+  return "";
 }

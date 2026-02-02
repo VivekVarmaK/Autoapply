@@ -17,6 +17,7 @@ import { JobRecord } from "../types/jobs";
 import { discoverJobs } from "../discovery";
 import { filterJobs } from "../discovery/filterJobs";
 import { runGreenhouseDryRun, runGreenhouseDryRunForJobs } from "../core/greenhouseApply";
+import { generateLongformAnswer } from "../llm";
 
 export async function runCli(): Promise<void> {
   const args = process.argv.slice(2);
@@ -180,6 +181,16 @@ async function handleProfile(args: string[]): Promise<void> {
     profile.github = github;
   }
 
+  const summary = readFlag(args, "--summary");
+  if (summary) {
+    profile.summary = summary;
+  }
+
+  const skills = readMultiFlag(args, "--skill");
+  if (skills.length > 0) {
+    profile.skills = skills;
+  }
+
   const gender = readFlag(args, "--gender");
   if (gender) {
     eeo.gender = gender;
@@ -216,8 +227,29 @@ async function handleProfile(args: string[]): Promise<void> {
   }
   profile.answers = Object.keys(answers).length > 0 ? answers : undefined;
 
+  const llmProvider = readFlag(args, "--llm-provider");
+  const llmModel = readFlag(args, "--llm-model");
+  const llmEnabled = readFlag(args, "--llm-enabled");
+  const llmMaxCost = readFlag(args, "--llm-max-cost");
+  const llmMaxTokens = readFlag(args, "--llm-max-tokens");
+
+  const nextConfig = { ...config, profile };
+  if (llmProvider || llmModel || llmEnabled || llmMaxCost || llmMaxTokens) {
+    nextConfig.app = {
+      ...nextConfig.app,
+      llm: {
+        ...nextConfig.app.llm,
+        provider: llmProvider ? (llmProvider as any) : nextConfig.app.llm.provider,
+        model: llmModel ?? nextConfig.app.llm.model,
+        enabled: llmEnabled ? llmEnabled === "true" : nextConfig.app.llm.enabled,
+        maxCostPerAnswerUsd: llmMaxCost ? Number(llmMaxCost) : nextConfig.app.llm.maxCostPerAnswerUsd,
+        maxOutputTokens: llmMaxTokens ? Number(llmMaxTokens) : nextConfig.app.llm.maxOutputTokens,
+      },
+    };
+  }
+
   profile.eeo = Object.keys(eeo).length > 0 ? eeo : undefined;
-  saveConfig({ ...config, profile });
+  saveConfig(nextConfig);
   process.stdout.write("Profile updated.\n");
 }
 
@@ -443,6 +475,14 @@ async function handleApply(args: string[]): Promise<void> {
   const jobRepo = new FileJobRepo(config.app.dataDir);
 
   try {
+    const persistAnswer = (key: string, value: string) => {
+      const current = loadConfig();
+      const answers = { ...(current.profile.answers ?? {}) } as Record<string, string>;
+      answers[key] = value;
+      current.profile.answers = answers;
+      saveConfig(current);
+    };
+
     const ctx = {
       profile: config.profile,
       resume,
@@ -457,6 +497,8 @@ async function handleApply(args: string[]): Promise<void> {
       dataDir: config.app.dataDir,
       keepOpen,
       pauseOnVerification,
+      llm: config.app.llm,
+      persistAnswer,
     };
 
     let jobs: JobRecord[] | null = null;

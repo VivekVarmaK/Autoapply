@@ -4,6 +4,7 @@ import { JobRecord } from "../types/jobs";
 import { ApplyResult } from "../types/boards";
 import { ApplyContext } from "../types/context";
 import { JobRepo } from "../storage/repositories";
+import { generateLongformAnswer } from "../llm";
 
 export interface GreenhouseApplyOptions {
   limit: number;
@@ -215,6 +216,10 @@ async function applyGreenhouseJob(job: JobRecord, ctx: ApplyContext, jobRepo?: J
         ctx.lastScreenshotPath = pathValue;
       },
       pauseOnVerification: ctx.pauseOnVerification,
+      generateLongform: ctx.llm?.enabled
+        ? (prompt: { question: string; profile: any }) => generateLongformAnswer(prompt, ctx.llm)
+        : undefined,
+      persistAnswer: ctx.persistAnswer,
     };
 
     await ctx.formEngine.mapAndFill(activePage, ctx.profile, ctx.resume, meta);

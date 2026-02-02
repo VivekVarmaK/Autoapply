@@ -11,6 +11,8 @@ export interface FormMeta {
   setLastScreenshot: (path: string) => void;
   dataDir?: string;
   pauseOnVerification?: boolean;
+  generateLongform?: (prompt: { question: string; profile: UserProfile }) => Promise<string | null>;
+  persistAnswer?: (key: string, value: string) => void;
 }
 
 export interface FormEngine {

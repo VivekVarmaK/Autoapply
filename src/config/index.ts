@@ -16,6 +16,13 @@ export interface AppConfig {
     headless: boolean;
     slowMoMs: number;
     maxApplicationsPerRun: number;
+    llm: {
+      provider: "openai";
+      model: string;
+      maxCostPerAnswerUsd: number;
+      maxOutputTokens: number;
+      enabled: boolean;
+    };
   };
   profile: UserProfile;
   resumes: ResumeAsset[];
@@ -34,6 +41,13 @@ export function defaultConfig(): AppConfig {
       headless: false,
       slowMoMs: 200,
       maxApplicationsPerRun: 25,
+      llm: {
+        provider: "openai",
+        model: "gpt-5.2-codex",
+        maxCostPerAnswerUsd: 0.1,
+        maxOutputTokens: 400,
+        enabled: false,
+      },
     },
     profile: {
       fullName: "",
